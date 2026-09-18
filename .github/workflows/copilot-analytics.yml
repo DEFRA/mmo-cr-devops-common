@@ -1,0 +1,266 @@
+name: Copilot Analytics
+
+# Shared implementation of the Copilot authorship analytics pipeline. Consuming
+# repositories own only their triggers and their own ingest configuration.
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: >-
+          Pull request number to collect analytics for. Only read when the caller
+          was triggered by workflow_dispatch; ignored for pull_request events.
+        required: false
+        type: string
+        default: ''
+      ingest-url:
+        description: >-
+          Dashboard ingest endpoint. When empty, metrics are still collected and
+          uploaded as a run artifact, but nothing is published.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      ingest-token:
+        description: >-
+          Shared secret sent in the x-ingest-token header. Required whenever
+          ingest-url is set.
+        required: false
+
+jobs:
+  collect-and-publish:
+    name: Collect and publish Copilot analytics
+    runs-on: ubuntu-latest
+    # Analytics must never fail a pull request, and `continue-on-error` is not
+    # supported on the calling job, so the guarantee has to be made here.
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: read
+    # Fork and Dependabot pull requests receive no secrets, so publication
+    # could not succeed. Closed-but-not-merged pull requests are not measured.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]' &&
+        (github.event.action != 'closed' || github.event.pull_request.merged == true)
+      )
+
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: repo
+
+      # A called workflow's default checkout is the CALLER's repository, so the
+      # shared scripts must be pinned to this workflow's own commit explicitly.
+      - name: Check out the shared analytics scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'DEFRA/mmo-cr-devops-common' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: common
+
+      - name: Verify the shared scripts are present
+        env:
+          SCRIPT_DIR: ${{ github.workspace }}/common/.github/scripts/copilot-analytics
+          SHARED_SOURCE: ${{ job.workflow_repository || 'DEFRA/mmo-cr-devops-common' }}@${{ job.workflow_sha || 'main' }}
+        run: |
+          set -euo pipefail
+          for script in Get-CopilotMetrics.ps1 Publish-CopilotMetrics.ps1; do
+            if [[ ! -f "$SCRIPT_DIR/$script" ]]; then
+              echo "::error::$script was not found in $SCRIPT_DIR. The shared checkout resolved to '$SHARED_SOURCE'."
+              exit 1
+            fi
+          done
+          echo "Using shared scripts from $SHARED_SOURCE"
+
+      - name: Resolve pull request context
+        id: context
+        working-directory: repo
+        env:
+          # Consumed by `gh pr view` below — the manual-backfill path is the only
+          # thing in this workflow that calls the GitHub API.
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          INPUT_PR_NUMBER: ${{ inputs.pr-number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            number="$INPUT_PR_NUMBER"
+            if ! [[ "$number" =~ ^[0-9]+$ ]] || [[ "$number" -lt 1 ]]; then
+              echo "::error::pr-number must be a positive integer; got '$number'."
+              exit 1
+            fi
+            # Ref names cannot contain tabs, so @tsv is unambiguous here.
+            pr_tsv=$(gh pr view "$number" \
+              --json headRefOid,baseRefOid,headRefName,baseRefName,mergedAt \
+              --jq '[.headRefOid, .baseRefOid, .headRefName, .baseRefName, (.mergedAt // "")] | @tsv')
+            IFS=$'\t' read -r head_sha base_sha source_branch target_branch merged_at <<<"$pr_tsv"
+            analytics_event="manual-backfill"
+          else
+            number="$PR_NUMBER"
+            head_sha="$PR_HEAD_SHA"
+            base_sha="$PR_BASE_SHA"
+            source_branch="$PR_HEAD_REF"
+            target_branch="$PR_BASE_REF"
+            if [[ "$EVENT_ACTION" == "closed" && "$PR_MERGED" == "true" ]]; then
+              merged_at="$PR_MERGED_AT"
+              analytics_event="pr-merged"
+            else
+              merged_at=""
+              analytics_event="pr-synchronize"
+            fi
+          fi
+
+          if [[ -z "$number" || -z "$head_sha" || -z "$base_sha" ]]; then
+            echo "::error::Could not resolve the pull request context (number='$number', head='$head_sha', base='$base_sha')."
+            exit 1
+          fi
+
+          {
+            echo "pr-number=$number"
+            echo "head-sha=$head_sha"
+            echo "base-sha=$base_sha"
+            echo "source-branch=$source_branch"
+            echo "target-branch=$target_branch"
+            echo "merged-at=$merged_at"
+            echo "analytics-event=$analytics_event"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "PR #$number  $source_branch -> $target_branch  ($analytics_event)"
+
+      - name: Fetch the analysed commit range
+        id: range
+        working-directory: repo
+        env:
+          PR_NUMBER: ${{ steps.context.outputs.pr-number }}
+          HEAD_SHA: ${{ steps.context.outputs.head-sha }}
+          BASE_SHA: ${{ steps.context.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+
+          # refs/pull/<n>/head persists after merge, so the pull request's own
+          # commits stay reachable even when it was squash-merged.
+          git fetch --no-tags --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/${PR_NUMBER}"
+          git fetch --no-tags --quiet origin "$BASE_SHA" || true
+
+          # The stored base SHA can sit ahead of the real fork point, so merge-base
+          # pins the range to the commits the pull request actually introduced.
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          echo "merge-base=$merge_base" >> "$GITHUB_OUTPUT"
+          echo "Analysing ${merge_base}..${HEAD_SHA}"
+
+      - name: Collect Copilot metrics
+        id: collect
+        shell: pwsh
+        # The collector reads .analyticsignore and runs git from the working
+        # directory, so it must run inside the calling repository's checkout.
+        working-directory: repo
+        # Branch names are user-controlled and may contain quotes, so they are
+        # read from the environment rather than expanded into the script body.
+        env:
+          TARGET_BRANCH: ${{ steps.context.outputs.target-branch }}
+          SOURCE_BRANCH: ${{ steps.context.outputs.source-branch }}
+          MERGE_BASE: ${{ steps.range.outputs.merge-base }}
+          HEAD_SHA: ${{ steps.context.outputs.head-sha }}
+          PR_NUMBER: ${{ steps.context.outputs.pr-number }}
+          PR_MERGED_AT: ${{ steps.context.outputs.merged-at }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/common/.github/scripts/copilot-analytics/Get-CopilotMetrics.ps1" `
+            -TargetBranch $env:TARGET_BRANCH `
+            -SourceBranch $env:SOURCE_BRANCH `
+            -BaseCommitId $env:MERGE_BASE `
+            -SourceCommitId $env:HEAD_SHA `
+            -PrNumber $env:PR_NUMBER `
+            -PrMergedAt $env:PR_MERGED_AT `
+            -BuildId $env:GITHUB_RUN_ID `
+            -RepoName $env:GITHUB_REPOSITORY `
+            -OutputPath "$env:RUNNER_TEMP/copilot-metrics.json"
+
+      - name: Upload metrics payload
+        if: steps.collect.outputs.should-publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: copilot-metrics-pr-${{ steps.context.outputs.pr-number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/copilot-metrics.json
+          retention-days: 30
+
+      - name: Publish Copilot metrics
+        id: publish
+        if: steps.collect.outputs.should-publish == 'true'
+        shell: pwsh
+        env:
+          COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
+          INGEST_TOKEN: ${{ secrets.ingest-token }}
+          PR_NUMBER: ${{ steps.context.outputs.pr-number }}
+          ANALYTICS_EVENT: ${{ steps.context.outputs.analytics-event }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/common/.github/scripts/copilot-analytics/Publish-CopilotMetrics.ps1" `
+            -MetricsPath "$env:RUNNER_TEMP/copilot-metrics.json" `
+            -PrNumber $env:PR_NUMBER `
+            -BuildId $env:GITHUB_RUN_ID `
+            -EventName $env:ANALYTICS_EVENT
+
+      # The job is continue-on-error, so it always reports green. The summary
+      # is the only place a dropped payload becomes visible - state it plainly.
+      - name: Write job summary
+        if: always()
+        env:
+          COLLECTED: ${{ steps.collect.outputs.should-publish }}
+          COUNTED: ${{ steps.collect.outputs.counted-commits }}
+          EXCLUDED: ${{ steps.collect.outputs.excluded-commits }}
+          PUBLISH_RESULT: ${{ steps.publish.outcome }}
+          INGEST_CONFIGURED: ${{ inputs.ingest-url != '' }}
+          PR_NUMBER: ${{ steps.context.outputs.pr-number }}
+          ANALYTICS_EVENT: ${{ steps.context.outputs.analytics-event }}
+        run: |
+          set -euo pipefail
+          metrics="${RUNNER_TEMP}/copilot-metrics.json"
+
+          {
+            echo "## Copilot analytics — PR #${PR_NUMBER}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Trigger | \`${ANALYTICS_EVENT}\` |"
+            echo "| Counted commits | ${COUNTED:-0} |"
+            echo "| Excluded (rebase/dependabot) | ${EXCLUDED:-0} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ "${COLLECTED:-}" != "true" ]]; then
+            echo "| Status | **NOT PUBLISHED** — no countable commits |" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [[ "${INGEST_CONFIGURED}" != "true" ]]; then
+            echo "| Status | **NOT PUBLISHED** — no ingest URL was passed to the reusable workflow |" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${PUBLISH_RESULT:-}" == "success" ]]; then
+            echo "| Status | Published |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| Status | **NOT PUBLISHED** — publish step outcome: \`${PUBLISH_RESULT:-skipped}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Reproduces the exact request for manual verification while the
+          # dashboard is only reachable from the internal network.
+          {
+            echo
+            echo "<details><summary>Payload (copy for a manual <code>curl</code>)</summary>"
+            echo
+            echo '```json'
+            node -e 'console.log(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")),null,2))' "$metrics"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
