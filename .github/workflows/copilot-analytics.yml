@@ -20,11 +20,27 @@ on:
         required: false
         type: string
         default: ''
+      jira-project-keys:
+        description: >-
+          Optional comma-separated Jira project keys (for example MMO,CR). When
+          set, only keys in these projects are emitted; when empty, every
+          well-formed key is emitted as a candidate.
+        required: false
+        type: string
+        default: ''
+      ingest-audience:
+        description: >-
+          Audience of the GitHub Actions OIDC token sent to the dashboard. The
+          calling job must grant `id-token: write`; without it the shared
+          ingest-token secret is used instead.
+        required: false
+        type: string
+        default: 'mmo-cr-copilot-dashboard'
     secrets:
       ingest-token:
         description: >-
-          Shared secret sent in the x-ingest-token header. Required whenever
-          ingest-url is set.
+          Shared secret sent in the x-ingest-token header. Only used when no
+          OIDC token can be issued (the caller did not grant id-token: write).
         required: false
 
 jobs:
@@ -37,6 +53,8 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # Lets the publish step authenticate with a short-lived OIDC token (dashboard ADR 0003).
+      id-token: write
     # Fork and Dependabot pull requests receive no secrets, so publication
     # could not succeed. Closed-but-not-merged pull requests are not measured.
     if: >-
@@ -69,7 +87,7 @@ jobs:
           SHARED_SOURCE: ${{ job.workflow_repository || 'DEFRA/mmo-cr-devops-common' }}@${{ job.workflow_sha || 'main' }}
         run: |
           set -euo pipefail
-          for script in Get-CopilotMetrics.ps1 Publish-CopilotMetrics.ps1; do
+          for script in Get-CopilotMetrics.ps1 CopilotMetrics.Helpers.ps1 Publish-CopilotMetrics.ps1; do
             if [[ ! -f "$SCRIPT_DIR/$script" ]]; then
               echo "::error::$script was not found in $SCRIPT_DIR. The shared checkout resolved to '$SHARED_SOURCE'."
               exit 1
@@ -94,6 +112,8 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_MERGED: ${{ github.event.pull_request.merged }}
           PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          # Untrusted: only ever read from the environment, never interpolated.
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
 
@@ -108,6 +128,8 @@ jobs:
               --json headRefOid,baseRefOid,headRefName,baseRefName,mergedAt \
               --jq '[.headRefOid, .baseRefOid, .headRefName, .baseRefName, (.mergedAt // "")] | @tsv')
             IFS=$'\t' read -r head_sha base_sha source_branch target_branch merged_at <<<"$pr_tsv"
+            # Fetched separately: a title may contain tabs, which would break @tsv.
+            pr_title=$(gh pr view "$number" --json title --jq '.title')
             analytics_event="manual-backfill"
           else
             number="$PR_NUMBER"
@@ -115,6 +137,7 @@ jobs:
             base_sha="$PR_BASE_SHA"
             source_branch="$PR_HEAD_REF"
             target_branch="$PR_BASE_REF"
+            pr_title="$PR_TITLE"
             if [[ "$EVENT_ACTION" == "closed" && "$PR_MERGED" == "true" ]]; then
               merged_at="$PR_MERGED_AT"
               analytics_event="pr-merged"
@@ -137,6 +160,14 @@ jobs:
             echo "target-branch=$target_branch"
             echo "merged-at=$merged_at"
             echo "analytics-event=$analytics_event"
+          } >> "$GITHUB_OUTPUT"
+
+          # Random heredoc delimiter so an untrusted title cannot inject outputs.
+          delimiter="pr_title_$(openssl rand -hex 16)"
+          {
+            echo "pr-title<<$delimiter"
+            printf '%s\n' "$pr_title"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
           echo "PR #$number  $source_branch -> $target_branch  ($analytics_event)"
@@ -177,6 +208,9 @@ jobs:
           HEAD_SHA: ${{ steps.context.outputs.head-sha }}
           PR_NUMBER: ${{ steps.context.outputs.pr-number }}
           PR_MERGED_AT: ${{ steps.context.outputs.merged-at }}
+          PR_TITLE: ${{ steps.context.outputs.pr-title }}
+          PAYLOAD_SOURCE: ${{ steps.context.outputs.analytics-event == 'manual-backfill' && 'backfill' || 'live' }}
+          JIRA_PROJECT_KEYS: ${{ inputs.jira-project-keys }}
         run: |
           & "$env:GITHUB_WORKSPACE/common/.github/scripts/copilot-analytics/Get-CopilotMetrics.ps1" `
             -TargetBranch $env:TARGET_BRANCH `
@@ -185,6 +219,9 @@ jobs:
             -SourceCommitId $env:HEAD_SHA `
             -PrNumber $env:PR_NUMBER `
             -PrMergedAt $env:PR_MERGED_AT `
+            -PrTitle $env:PR_TITLE `
+            -Source $env:PAYLOAD_SOURCE `
+            -JiraProjectKeys $env:JIRA_PROJECT_KEYS `
             -BuildId $env:GITHUB_RUN_ID `
             -RepoName $env:GITHUB_REPOSITORY `
             -OutputPath "$env:RUNNER_TEMP/copilot-metrics.json"
@@ -204,6 +241,7 @@ jobs:
         env:
           COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
           INGEST_TOKEN: ${{ secrets.ingest-token }}
+          INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
           PR_NUMBER: ${{ steps.context.outputs.pr-number }}
           ANALYTICS_EVENT: ${{ steps.context.outputs.analytics-event }}
         run: |

@@ -1,0 +1,31 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test and coverage output
+testResults.xml
+TestResults/
+test-results/
+coverage/
+*.trx
+*.nunit.xml
+*.junit.xml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Docs: only ADRs are committed
+docs/*
+!docs/adr/

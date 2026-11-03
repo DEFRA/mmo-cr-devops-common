@@ -1,0 +1,142 @@
+name: Copilot Analytics Backfill
+
+# Re-collects merged pull requests since a date and publishes them with
+# source 'backfill'. The backend keeps an existing live merged record, so
+# re-runs are safe. Callers own the trigger (normally workflow_dispatch).
+
+on:
+  workflow_call:
+    inputs:
+      since:
+        description: Collect pull requests merged on or after this date (YYYY-MM-DD).
+        required: true
+        type: string
+      max-prs:
+        description: Upper limit on the number of pull requests processed.
+        required: false
+        type: number
+        default: 500
+      ingest-url:
+        description: Dashboard ingest endpoint. When empty, nothing is published.
+        required: false
+        type: string
+        default: ''
+      jira-project-keys:
+        description: Optional comma-separated Jira project keys (for example MMO,CR).
+        required: false
+        type: string
+        default: ''
+      ingest-audience:
+        description: Audience of the GitHub Actions OIDC token sent to the dashboard.
+        required: false
+        type: string
+        default: 'mmo-cr-copilot-dashboard'
+    secrets:
+      ingest-token:
+        description: Shared secret, used only when no OIDC token can be issued.
+        required: false
+
+jobs:
+  backfill:
+    name: Backfill Copilot analytics
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
+    steps:
+      - name: Validate inputs
+        env:
+          SINCE: ${{ inputs.since }}
+          MAX_PRS: ${{ inputs.max-prs }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::since must be a date in YYYY-MM-DD form; got '$SINCE'."
+            exit 1
+          fi
+          if ! [[ "$MAX_PRS" =~ ^[0-9]+$ ]] || (( MAX_PRS < 1 || MAX_PRS > 1000 )); then
+            echo "::error::max-prs must be between 1 and 1000; got '$MAX_PRS'."
+            exit 1
+          fi
+
+      - name: Check out the calling repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: repo
+
+      - name: Check out the shared analytics scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'DEFRA/mmo-cr-devops-common' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: common
+
+      - name: Collect and publish each merged pull request
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+          MAX_PRS: ${{ inputs.max-prs }}
+          SCRIPT_DIR: ${{ github.workspace }}/common/.github/scripts/copilot-analytics
+          COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
+          INGEST_TOKEN: ${{ secrets.ingest-token }}
+          INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
+          JIRA_PROJECT_KEYS: ${{ inputs.jira-project-keys }}
+        run: |
+          set -uo pipefail
+          summary="$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Copilot analytics backfill since ${SINCE}"
+            echo
+            echo "| Pull request | Result |"
+            echo "|---|---|"
+          } >> "$summary"
+
+          mapfile -t numbers < <(gh pr list --state merged \
+            --search "merged:>=${SINCE}" --json number --limit "$MAX_PRS" \
+            --jq '.[].number')
+          echo "Found ${#numbers[@]} merged pull requests"
+
+          for number in "${numbers[@]}"; do
+            [[ "$number" =~ ^[0-9]+$ ]] || continue
+            result="failed"
+            out="$RUNNER_TEMP/out-${number}"
+            metrics="$RUNNER_TEMP/metrics-${number}.json"
+            : > "$out"
+
+            if pr_tsv=$(gh pr view "$number" \
+                --json headRefOid,baseRefOid,headRefName,baseRefName,mergedAt \
+                --jq '[.headRefOid, .baseRefOid, .headRefName, .baseRefName, (.mergedAt // "")] | @tsv') \
+              && IFS=$'\t' read -r head_sha base_sha source_branch target_branch merged_at <<<"$pr_tsv" \
+              && pr_title=$(gh pr view "$number" --json title --jq '.title') \
+              && git fetch --no-tags --quiet origin "+refs/pull/${number}/head:refs/remotes/pr/${number}" \
+              && { git fetch --no-tags --quiet origin "$base_sha" || true; } \
+              && merge_base=$(git merge-base "$base_sha" "$head_sha") \
+              && GITHUB_OUTPUT="$out" TARGET_BRANCH="$target_branch" SOURCE_BRANCH="$source_branch" \
+                 MERGE_BASE="$merge_base" HEAD_SHA="$head_sha" PR_NUMBER="$number" \
+                 PR_MERGED_AT="$merged_at" PR_TITLE="$pr_title" METRICS="$metrics" \
+                 pwsh -NoProfile -Command '& "$env:SCRIPT_DIR/Get-CopilotMetrics.ps1" `
+                   -TargetBranch $env:TARGET_BRANCH -SourceBranch $env:SOURCE_BRANCH `
+                   -BaseCommitId $env:MERGE_BASE -SourceCommitId $env:HEAD_SHA `
+                   -PrNumber $env:PR_NUMBER -PrMergedAt $env:PR_MERGED_AT `
+                   -PrTitle $env:PR_TITLE -Source backfill `
+                   -JiraProjectKeys $env:JIRA_PROJECT_KEYS -BuildId $env:GITHUB_RUN_ID `
+                   -RepoName $env:GITHUB_REPOSITORY -OutputPath $env:METRICS'; then
+              if ! grep -q '^should-publish=true' "$out"; then
+                result="skipped (no countable commits)"
+              elif [[ -z "$COPILOT_ANALYTICS_INGEST_URL" ]]; then
+                result="collected (no ingest URL)"
+              elif PR_NUMBER="$number" METRICS="$metrics" pwsh -NoProfile -Command \
+                  '& "$env:SCRIPT_DIR/Publish-CopilotMetrics.ps1" -MetricsPath $env:METRICS `
+                    -PrNumber $env:PR_NUMBER -BuildId $env:GITHUB_RUN_ID -EventName manual-backfill'; then
+                result="published"
+              fi
+            fi
+
+            echo "| #${number} | ${result} |" >> "$summary"
+            sleep 1
+          done

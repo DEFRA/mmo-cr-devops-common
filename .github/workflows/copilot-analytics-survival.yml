@@ -1,0 +1,99 @@
+name: Copilot Analytics Survival
+
+# Measures how much AI-written code survives N days after a pull request merges
+# and publishes one record per pull request. Callers own only their triggers
+# (a daily schedule and a manual dispatch); see this repository's README.
+
+on:
+  workflow_call:
+    inputs:
+      window-days:
+        description: Days after the merge at which survival is measured (7, 14, 21 or 30).
+        required: false
+        type: number
+        default: 21
+      lookback-days:
+        description: Days of merges to consider each run, so a missed run catches up.
+        required: false
+        type: number
+        default: 7
+      pr-number:
+        description: Measure one pull request instead of listing merged ones. 0 means list.
+        required: false
+        type: number
+        default: 0
+      ingest-url:
+        description: >-
+          Dashboard survival endpoint, for example https://host/api/ingest/survival.
+          When empty, records are measured and uploaded as an artifact only.
+        required: false
+        type: string
+        default: ''
+      ingest-audience:
+        description: Audience of the GitHub Actions OIDC token sent to the dashboard.
+        required: false
+        type: string
+        default: 'mmo-cr-copilot-dashboard'
+
+jobs:
+  survival:
+    name: Measure and publish AI code survival
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Survival reporting must never fail the calling repository's checks.
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: repo
+
+      - name: Check out the shared analytics scripts
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'DEFRA/mmo-cr-devops-common' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: common
+
+      - name: Measure AI code survival
+        id: measure
+        shell: pwsh
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          WINDOW_DAYS: ${{ inputs.window-days }}
+          LOOKBACK_DAYS: ${{ inputs.lookback-days }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/common/.github/scripts/copilot-analytics/Get-AiSurvival.ps1" `
+            -Repository $env:GITHUB_REPOSITORY `
+            -DefaultBranch $env:DEFAULT_BRANCH `
+            -WindowDays ([int]$env:WINDOW_DAYS) `
+            -LookbackDays ([int]$env:LOOKBACK_DAYS) `
+            -PrNumber ([int]$env:PR_NUMBER) `
+            -OutputPath "$env:RUNNER_TEMP/ai-survival.json"
+
+      - name: Upload survival records
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-survival-${{ github.run_id }}
+          path: ${{ runner.temp }}/ai-survival.json
+          retention-days: 30
+
+      - name: Publish survival records
+        if: inputs.ingest-url != ''
+        shell: pwsh
+        env:
+          INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
+          INGEST_URL: ${{ inputs.ingest-url }}
+        run: |
+          & "$env:GITHUB_WORKSPACE/common/.github/scripts/copilot-analytics/Publish-AiSurvival.ps1" `
+            -IngestUrl $env:INGEST_URL `
+            -InputPath "$env:RUNNER_TEMP/ai-survival.json"
