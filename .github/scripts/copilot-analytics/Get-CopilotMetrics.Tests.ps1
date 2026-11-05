@@ -259,7 +259,7 @@ Describe 'Get-CopilotMetrics v2 line verification' {
                     source = 'copilot-otel-file'
                     sessions = @([ordered]@{
                             agent = 'GitHub Copilot Chat'
-                            models = @([ordered]@{ model = 'claude-sonnet-4.5'; requests = 7; inputTokens = 48211; outputTokens = 3112; cacheReadTokens = 30120; cacheCreationTokens = 0; reasoningTokens = 0 })
+                            models = @([ordered]@{ model = 'claude-sonnet-4.5'; requests = 6.5; inputTokens = 48211; outputTokens = 3112; cacheReadTokens = 30120; cacheCreationTokens = 0; reasoningTokens = 0; credits = 0.4213 })
                         })
                 }
             }
@@ -291,6 +291,8 @@ Describe 'Get-CopilotMetrics v2 line verification' {
         $commit.attribution.usage.commitsWithUsage | Should -Be 1
         $commit.attribution.usage.models[0].model | Should -Be 'claude-sonnet-4.5'
         $commit.attribution.usage.models[0].inputTokens | Should -Be 48211
+        $commit.attribution.usage.models[0].requests | Should -Be 6.5
+        $commit.attribution.usage.models[0].credits | Should -Be 0.4213
     }
 
     It 'Counts a line whose fingerprint does not match as human-authored' {

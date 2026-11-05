@@ -1,0 +1,7 @@
+# Everything the migration produces holds contributor identities or run detail. Never commit it.
+output/
+*.ndjson
+*.profile.json
+*.log
+audit-*.jsonl
+summary-*.json

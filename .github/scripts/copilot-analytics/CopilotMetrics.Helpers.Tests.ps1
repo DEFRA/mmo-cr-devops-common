@@ -161,6 +161,29 @@ Describe 'ConvertFrom-AnalyticsUsage' {
         $usage['models'][0]['reasoningTokens'] | Should -Be 1
     }
 
+    It 'Sums AI credits and shared requests across sessions' {
+        $json = [ordered]@{
+            schema = 'ai-attribution/2'; signals = [ordered]@{ usage = 'captured' }
+            usage = [ordered]@{
+                sessions = @(
+                    [ordered]@{ models = @([ordered]@{ model = 'gpt-5'; requests = 0.5; inputTokens = 50; outputTokens = 5; credits = 0.0125 }) }
+                    [ordered]@{ models = @([ordered]@{ model = 'gpt-5'; requests = 1.33; inputTokens = 10; outputTokens = 1; credits = 0.002 }) }
+                )
+            }
+        } | ConvertTo-Json -Depth 8
+
+        $model = (ConvertFrom-AnalyticsUsage -Json $json)['models'][0]
+
+        [math]::Round($model['requests'], 2) | Should -Be 1.83
+        [math]::Round($model['credits'], 4) | Should -Be 0.0145
+    }
+
+    It 'Has no credits for a model that is unpriced in any session' {
+        $usage = ConvertFrom-AnalyticsUsage -Json (Get-UsageJson)
+
+        $usage['models'][0]['credits'] | Should -BeNullOrEmpty
+    }
+
     It 'Returns nothing for <Case>' -ForEach @(
         @{ Case = 'v1'; Json = { Get-UsageJson -Schema 'mmo-attribution/1' } }
         @{ Case = 'usage that was not captured'; Json = { Get-UsageJson -State 'off' } }
@@ -180,7 +203,19 @@ Describe 'Merge-AnalyticsUsage' {
 
         $merged['sessions'] | Should -Be 3
         $merged['models'][0]['inputTokens'] | Should -Be 15
+        $merged['models'][0].Contains('credits') | Should -BeFalse
         Merge-AnalyticsUsage -Usage @($null) | Should -BeNullOrEmpty
+    }
+
+    It 'Sums and rounds credits across commits, and drops them when one commit is unpriced' {
+        $priced = { param($c) [ordered]@{ sessions = 1; models = @([ordered]@{ model = 'm'; requests = 0.333; inputTokens = 1; outputTokens = 0; cacheReadTokens = 0; cacheCreationTokens = 0; reasoningTokens = 0; credits = $c }) } }
+
+        $merged = Merge-AnalyticsUsage -Usage @((& $priced 0.00011), (& $priced 0.00012))
+        $merged['models'][0]['credits'] | Should -Be 0.0002
+        $merged['models'][0]['requests'] | Should -Be 0.67
+
+        $mixed = Merge-AnalyticsUsage -Usage @((& $priced 0.5), (& $priced $null))
+        $mixed['models'][0].Contains('credits') | Should -BeFalse
     }
 
     It 'Folds models beyond the cap into other' {

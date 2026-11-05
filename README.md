@@ -111,7 +111,10 @@ repositories) would remove the per-repository setup and needs no change to any w
   human-authored, and a `::warning::` annotation says how many. Format v1 records, records over
   1 MB and commits with more than 200 file records are not verified and use the summary totals.
 - When a v2 summary carries Copilot usage (`signals.usage: captured`), the commit's `attribution`
-  gains a `usage` block with model and token counts. Only counts are read.
+  gains a `usage` block with, per model, request and token counts and the GitHub AI credits the
+  extension recorded. Requests can be fractional (2 decimals) when a Copilot request was shared
+  between repositories; credits have 4 decimals and are left out for a model with any unpriced
+  usage. Only counts are read.
 - Publication is idempotent: the consumer upserts one document per `(repository, prNumber)` and
   only replaces it when the incoming `calculatedAt` is newer, so re-runs converge rather than
   duplicate.
@@ -128,7 +131,7 @@ On top of v1 it adds:
 | `prTitle`                    | The pull request title, truncated to 256 characters.                                                        |
 | `jiraKeys`                   | Candidate Jira issue keys from the branch name, title and counted commit messages. At most 50.              |
 | `files`                      | Net PR diff (merge-base to head) split into non-test, test and excluded files and lines, plus module count. |
-| `commitBreakdown[].attribution` | `extension` when the commit adds `.analytics` metadata, or inferred 100% human when a human-authored commit has none; `legacy-trailer` for a historical `Copilot-Assisted: true` trailer; `none` for rebase, merge and Dependabot commits. An `extension` entry may carry `usage`: `{ models: [{ model, requests, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, reasoningTokens }], sessions, commitsWithUsage }`. |
+| `commitBreakdown[].attribution` | `extension` when the commit adds `.analytics` metadata, or inferred 100% human when a human-authored commit has none; `legacy-trailer` for a historical `Copilot-Assisted: true` trailer; `none` for rebase, merge and Dependabot commits. An `extension` entry may carry `usage`: `{ models: [{ model, requests, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, reasoningTokens, credits? }], sessions, commitsWithUsage }`. |
 
 - **Jira keys.** Without `jira-project-keys`, every well-formed key (such as `MMO-123`) is emitted as a
   candidate and the backend filters later. With it, only listed projects are kept and the branch

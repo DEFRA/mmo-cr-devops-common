@@ -1,0 +1,22 @@
+{
+  "schema": "ai-attribution-file/2",
+  "path": ".github/scripts/copilot-analytics/Get-CopilotMetrics.Tests.ps1",
+  "added": 3,
+  "counts": {
+    "aiCompletion": 0,
+    "aiChat": 0,
+    "aiAgent": 3,
+    "aiModified": 0,
+    "pasted": 0,
+    "typed": 0,
+    "untracked": 0
+  },
+  "ranges": {
+    "ai-agent": "262,294-295"
+  },
+  "ai": [
+    [262, "a", "d0a4eae8", 0],
+    [294, "a", "7953ce07", 0],
+    [295, "a", "9faa3282", 0]
+  ]
+}

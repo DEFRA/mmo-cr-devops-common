@@ -1,0 +1,24 @@
+{
+  "schema": "ai-attribution-file/2",
+  "path": "README.md",
+  "added": 5,
+  "counts": {
+    "aiCompletion": 0,
+    "aiChat": 0,
+    "aiAgent": 4,
+    "aiModified": 0,
+    "pasted": 0,
+    "typed": 0,
+    "untracked": 1
+  },
+  "ranges": {
+    "ai-agent": "114-117",
+    "untracked": "134"
+  },
+  "ai": [
+    [114, "a", "91cdebd7", 0],
+    [115, "a", "79b04a16", 0],
+    [116, "a", "ec985ce1", 0],
+    [117, "a", "afbead95", 0]
+  ]
+}

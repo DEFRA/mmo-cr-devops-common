@@ -43,7 +43,7 @@ $script:AnalyticsFileSchemas = @('ai-attribution-file/2', 'mmo-attribution-file/
 $script:AnalyticsMaxFileRecords = 200
 $script:AnalyticsMaxModels = 20
 $script:AnalyticsMaxTokens = 10000000000L
-$script:AnalyticsUsageKeys = @('requests', 'inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens', 'reasoningTokens')
+$script:AnalyticsUsageKeys = @('inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens', 'reasoningTokens')
 
 <#
     Fingerprint of one source line, identical to the extension's fingerprint():
@@ -118,15 +118,37 @@ function Get-JsonProperty {
 function Get-EmptyUsageEntry {
     param([string]$Model)
 
-    $entry = [ordered]@{ model = $Model }
+    $entry = [ordered]@{ model = $Model; requests = 0.0 }
     foreach ($key in $script:AnalyticsUsageKeys) { $entry[$key] = 0L }
+    $entry['credits'] = 0.0
     return $entry
 }
 
+<# A non-negative decimal (requests can be a share of a request), or $null when absent or invalid. #>
+function ConvertTo-UsageDecimal {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    $number = 0.0
+    $style = [System.Globalization.NumberStyles]::Float
+    if (-not [double]::TryParse([string]$Value, $style, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return $null }
+    if ([double]::IsNaN($number) -or $number -lt 0 -or $number -gt $script:AnalyticsMaxTokens) { return $null }
+    return $number
+}
+
+<# Adds AI credits to an entry; once any part is unpriced the entry has no credits at all. #>
+function Add-UsageCredit {
+    param([Parameter(Mandatory)]$Entry, [AllowNull()]$Amount)
+
+    if ($null -eq $Entry['credits']) { return }
+    $Entry['credits'] = if ($null -eq $Amount) { $null } else { $Entry['credits'] + [double]$Amount }
+}
+
 <#
-    Model and token usage from a v2 summary, aggregated per model across its
-    sessions. Returns $null for v1, usage that is not `captured`, or malformed
-    data; the caller then simply has no usage for the commit.
+    Model usage from a v2 summary, aggregated per model across its sessions:
+    requests, token counts and AI credits. Returns $null for v1, usage that is
+    not `captured`, or malformed data; the caller then simply has no usage for
+    the commit. A model without credits in any session gets credits = $null.
 #>
 function ConvertFrom-AnalyticsUsage {
     [CmdletBinding()]
@@ -154,13 +176,20 @@ function ConvertFrom-AnalyticsUsage {
                     $byModel[$name][$key] = [math]::Min($script:AnalyticsMaxTokens, $byModel[$name][$key] + $number)
                 }
             }
+            $requests = ConvertTo-UsageDecimal (Get-JsonProperty $item 'requests')
+            if ($null -ne $requests) { $byModel[$name]['requests'] += $requests }
+            Add-UsageCredit -Entry $byModel[$name] -Amount (ConvertTo-UsageDecimal (Get-JsonProperty $item 'credits'))
         }
     }
     if ($byModel.Count -eq 0) { return $null }
     return [ordered]@{ models = @($byModel.Values); sessions = $sessionCount }
 }
 
-<# Sums per-commit usage; models beyond the cap are folded into "other". #>
+<#
+    Sums per-commit usage; models beyond the cap are folded into "other".
+    Requests are rounded to 2 decimals and credits to 4; credits are left out
+    for a model with any unpriced usage.
+#>
 function Merge-AnalyticsUsage {
     [CmdletBinding()]
     param([AllowNull()][object[]]$Usage)
@@ -174,9 +203,12 @@ function Merge-AnalyticsUsage {
         $sessions += [int]$item['sessions']
         foreach ($entry in $item['models']) {
             if (-not $byModel.Contains($entry['model'])) { $byModel[$entry['model']] = Get-EmptyUsageEntry -Model $entry['model'] }
+            $target = $byModel[$entry['model']]
             foreach ($key in $script:AnalyticsUsageKeys) {
-                $byModel[$entry['model']][$key] = [math]::Min($script:AnalyticsMaxTokens, $byModel[$entry['model']][$key] + [int64]$entry[$key])
+                $target[$key] = [math]::Min($script:AnalyticsMaxTokens, $target[$key] + [int64]$entry[$key])
             }
+            $target['requests'] += [double]$entry['requests']
+            Add-UsageCredit -Entry $target -Amount $entry['credits']
         }
     }
 
@@ -185,8 +217,15 @@ function Merge-AnalyticsUsage {
         $other = Get-EmptyUsageEntry -Model 'other'
         foreach ($entry in $models[($script:AnalyticsMaxModels - 1)..($models.Count - 1)]) {
             foreach ($key in $script:AnalyticsUsageKeys) { $other[$key] = [math]::Min($script:AnalyticsMaxTokens, $other[$key] + $entry[$key]) }
+            $other['requests'] += $entry['requests']
+            Add-UsageCredit -Entry $other -Amount $entry['credits']
         }
         $models = @($models[0..($script:AnalyticsMaxModels - 2)]) + @($other)
+    }
+    foreach ($model in $models) {
+        $model['requests'] = [math]::Round($model['requests'], 2)
+        if ($null -eq $model['credits']) { $model.Remove('credits') }
+        else { $model['credits'] = [math]::Round($model['credits'], 4) }
     }
     return [ordered]@{ models = $models; sessions = $sessions }
 }
