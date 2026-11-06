@@ -1,21 +1,20 @@
 {
   "schema": "ai-attribution-file/2",
-  "path": ".github/scripts/copilot-analytics/CopilotMetrics.Helpers.ps1",
-  "added": 2,
+  "path": "README.md",
+  "added": 1,
   "counts": {
     "aiCompletion": 0,
     "aiChat": 0,
-    "aiAgent": 2,
+    "aiAgent": 1,
     "aiModified": 0,
     "pasted": 0,
     "typed": 0,
     "untracked": 0
   },
   "ranges": {
-    "ai-agent": "515,520"
+    "ai-agent": "192"
   },
   "ai": [
-    [515, "a", "4d8a26da", 0],
-    [520, "a", "f32b3be4", 0]
+    [192, "a", "274da70e", 0]
   ]
 }

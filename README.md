@@ -189,6 +189,7 @@ jobs:
 | :------------------ | :----- | :------- | :------------------------------------------------------------------ |
 | `since`             | string | Yes      | Pull requests merged on or after this date (`YYYY-MM-DD`).          |
 | `max-prs`           | number | No       | Upper limit on pull requests processed, 1 to 1000. Default `500`.   |
+| `base-branch`       | string | No       | Only pull requests merged into this branch. Use it to skip promotion pull requests (for example `develop` to `main`). |
 | `ingest-url`        | string | No       | Dashboard ingest endpoint. When empty, nothing is published.        |
 | `jira-project-keys` | string | No       | Comma-separated Jira project keys, as for the per-PR workflow.      |
 | `ingest-audience`   | string | No       | OIDC audience, default `mmo-cr-copilot-dashboard`.                  |

@@ -16,6 +16,13 @@ on:
         required: false
         type: number
         default: 500
+      base-branch:
+        description: >-
+          Only collect pull requests merged into this branch. Set it when promotion pull
+          requests (for example develop to main) would otherwise count commits twice.
+        required: false
+        type: string
+        default: ''
       ingest-url:
         description: Dashboard ingest endpoint. When empty, nothing is published.
         required: false
@@ -81,6 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SINCE: ${{ inputs.since }}
           MAX_PRS: ${{ inputs.max-prs }}
+          BASE_BRANCH: ${{ inputs.base-branch }}
           SCRIPT_DIR: ${{ github.workspace }}/common/.github/scripts/copilot-analytics
           COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
           INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
@@ -95,10 +103,12 @@ jobs:
             echo "|---|---|"
           } >> "$summary"
 
-          mapfile -t numbers < <(gh pr list --state merged \
+          base_args=()
+          [[ -n "$BASE_BRANCH" ]] && base_args=(--base "$BASE_BRANCH")
+          mapfile -t numbers < <(gh pr list --state merged "${base_args[@]}" \
             --search "merged:>=${SINCE}" --json number --limit "$MAX_PRS" \
             --jq '.[].number')
-          echo "Found ${#numbers[@]} merged pull requests"
+          echo "Found ${#numbers[@]} merged pull requests${BASE_BRANCH:+ into $BASE_BRANCH}"
 
           for number in "${numbers[@]}"; do
             [[ "$number" =~ ^[0-9]+$ ]] || continue

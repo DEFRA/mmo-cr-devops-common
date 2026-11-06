@@ -1,0 +1,31 @@
+{
+  "schema": "ai-attribution-file/2",
+  "path": ".github/workflows/copilot-analytics-backfill.yml",
+  "added": 12,
+  "counts": {
+    "aiCompletion": 0,
+    "aiChat": 0,
+    "aiAgent": 12,
+    "aiModified": 0,
+    "pasted": 0,
+    "typed": 0,
+    "untracked": 0
+  },
+  "ranges": {
+    "ai-agent": "19-25,91,106-108,111"
+  },
+  "ai": [
+    [19, "a", "95f46198", 0],
+    [20, "a", "237cef2e", 0],
+    [21, "a", "125f930e", 0],
+    [22, "a", "94a0dc5a", 0],
+    [23, "a", "479f1733", 0],
+    [24, "a", "4c2336fa", 0],
+    [25, "a", "d1d8c137", 0],
+    [91, "a", "a15fba84", 0],
+    [106, "a", "39ef2c8d", 0],
+    [107, "a", "07be8cb6", 0],
+    [108, "a", "c552ef50", 0],
+    [111, "a", "981eb561", 0]
+  ]
+}
