@@ -179,6 +179,53 @@ Describe 'Get-CopilotMetrics contract v2' {
         $result.Json.commitBreakdown[0].attribution.typedLines | Should -Be 2
     }
 
+    It 'Ignores the trailer when the commit adds metadata with no AI lines' {
+        $strict = Join-Path $TestDrive 'strict-repo'
+        New-Item -ItemType Directory -Path $strict | Out-Null
+        git -C $strict init --quiet -b main
+        git -C $strict config commit.gpgsign false
+        Set-Content -Path (Join-Path $strict 'a.txt') -Value 'base'
+        git -C $strict add -A
+        git -C $strict commit --quiet -m 'base'
+        git -C $strict checkout --quiet -b feature
+        New-Item -ItemType Directory -Path (Join-Path $strict '.analytics/dddddddddddd') -Force | Out-Null
+        Set-Content -Path (Join-Path $strict '.analytics/dddddddddddd/summary.json') -Value '{"schema":"mmo-attribution/1","id":"dddddddddddd","totals":{"aiCompletion":0,"aiChat":0,"aiAgent":0,"aiModified":0,"pasted":0,"typed":2,"untracked":0}}'
+        Set-Content -Path (Join-Path $strict 'b.txt') -Value @('one', 'two')
+        git -C $strict add -A
+        git -C $strict commit --quiet -m 'Add b' -m 'Copilot-Assisted: true'
+        $headSha = (git -C $strict rev-parse HEAD).Trim()
+        $baseSha = (git -C $strict rev-parse main).Trim()
+
+        $result = Invoke-Collector -Extra @{ RepositoryPath = $strict; SourceCommitId = $headSha; BaseCommitId = $baseSha }
+
+        $result.Json.commitBreakdown[0].classification | Should -Be 'Human-authored'
+        $result.Json.commitBreakdown[0].attribution.source | Should -Be 'extension'
+        $result.Json.commitBreakdown[0].attribution.typedLines | Should -Be 2
+    }
+
+    It 'Falls back to the trailer when the commit adds invalid metadata' {
+        $fallback = Join-Path $TestDrive 'fallback-repo'
+        New-Item -ItemType Directory -Path $fallback | Out-Null
+        git -C $fallback init --quiet -b main
+        git -C $fallback config commit.gpgsign false
+        Set-Content -Path (Join-Path $fallback 'a.txt') -Value 'base'
+        git -C $fallback add -A
+        git -C $fallback commit --quiet -m 'base'
+        git -C $fallback checkout --quiet -b feature
+        New-Item -ItemType Directory -Path (Join-Path $fallback '.analytics/eeeeeeeeeeee') -Force | Out-Null
+        Set-Content -Path (Join-Path $fallback '.analytics/eeeeeeeeeeee/summary.json') -Value '{broken'
+        Set-Content -Path (Join-Path $fallback 'b.txt') -Value @('one', 'two')
+        git -C $fallback add -A
+        git -C $fallback commit --quiet -m 'Add b' -m 'Copilot-Assisted: true'
+        $headSha = (git -C $fallback rev-parse HEAD).Trim()
+        $baseSha = (git -C $fallback rev-parse main).Trim()
+
+        $result = Invoke-Collector -Extra @{ RepositoryPath = $fallback; SourceCommitId = $headSha; BaseCommitId = $baseSha }
+
+        $result.Json.commitBreakdown[0].classification | Should -Be 'Copilot-assisted'
+        $result.Json.commitBreakdown[0].attribution.source | Should -Be 'legacy-trailer'
+    }
+
     It 'Serialises a single Jira key as a JSON array' {
         $single = Invoke-Collector -Extra @{ JiraProjectKeys = 'CR' }
 

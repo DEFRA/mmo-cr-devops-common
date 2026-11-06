@@ -33,7 +33,7 @@ on:
         default: 'mmo-cr-copilot-dashboard'
     secrets:
       ingest-token:
-        description: Shared secret, used only when no OIDC token can be issued.
+        description: Deprecated and ignored; remove it from the caller.
         required: false
 
 jobs:
@@ -83,7 +83,6 @@ jobs:
           MAX_PRS: ${{ inputs.max-prs }}
           SCRIPT_DIR: ${{ github.workspace }}/common/.github/scripts/copilot-analytics
           COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
-          INGEST_TOKEN: ${{ secrets.ingest-token }}
           INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
           JIRA_PROJECT_KEYS: ${{ inputs.jira-project-keys }}
         run: |

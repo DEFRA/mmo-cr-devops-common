@@ -7,9 +7,9 @@
     The script:
       1. Enumerates every commit in the analysed range.
       2. Classifies each commit as 'Copilot-assisted', 'Human-authored',
-         'Rebase' or 'Dependabot'. A commit that adds .analytics metadata with
-         AI lines is Copilot-assisted; otherwise the legacy trailer decides;
-         otherwise it is 100% human-authored.
+         'Rebase' or 'Dependabot'. A commit that adds valid .analytics
+         metadata is classified by it alone (AI lines = Copilot-assisted);
+         only a commit without it falls back to the legacy trailer, then human.
       3. Calculates per-commit line volume (added + deleted) using git numstat
          with rename detection, excluding generated / vendored files and any
          path listed in .analyticsignore.
@@ -380,13 +380,13 @@ $commitData = @(foreach ($hash in $commitHashes) {
         $analyticsTotal = if ($parents.Count -lt 2 -and -not $isBot) { Get-AnalyticsTotal -Hash $hash } else { $null }
         $aiLines = if ($analyticsTotal) { $analyticsTotal['aiCompletion'] + $analyticsTotal['aiChat'] + $analyticsTotal['aiAgent'] } else { 0 }
 
-        # Order: .analytics metadata, then the legacy trailer, then human.
+        # Valid .analytics metadata is authoritative; the trailer applies only without it.
         $classification =
         if ($parents.Count -ge 2) { 'Rebase' }
         elseif ($subject -imatch $rebaseSubjectPattern) { 'Rebase' }
         elseif ($isBot) { 'Dependabot' }
         elseif ($aiLines -gt 0) { 'Copilot-assisted' }
-        elseif (Test-CopilotTrailer -Message $fullBody) { 'Copilot-assisted' }
+        elseif ($null -eq $analyticsTotal -and (Test-CopilotTrailer -Message $fullBody)) { 'Copilot-assisted' }
         else { 'Human-authored' }
 
         if ($countableClassifications -contains $classification) { $countedMessages.Add($fullBody) }

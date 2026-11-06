@@ -31,16 +31,15 @@ on:
       ingest-audience:
         description: >-
           Audience of the GitHub Actions OIDC token sent to the dashboard. The
-          calling job must grant `id-token: write`; without it the shared
-          ingest-token secret is used instead.
+          calling job must grant `id-token: write`; there is no other credential.
         required: false
         type: string
         default: 'mmo-cr-copilot-dashboard'
     secrets:
       ingest-token:
         description: >-
-          Shared secret sent in the x-ingest-token header. Only used when no
-          OIDC token can be issued (the caller did not grant id-token: write).
+          Deprecated and ignored. Kept only so callers that still pass it do not
+          fail; remove it from the caller.
         required: false
 
 jobs:
@@ -240,7 +239,6 @@ jobs:
         shell: pwsh
         env:
           COPILOT_ANALYTICS_INGEST_URL: ${{ inputs.ingest-url }}
-          INGEST_TOKEN: ${{ secrets.ingest-token }}
           INGEST_OIDC_AUDIENCE: ${{ inputs.ingest-audience }}
           PR_NUMBER: ${{ steps.context.outputs.pr-number }}
           ANALYTICS_EVENT: ${{ steps.context.outputs.analytics-event }}

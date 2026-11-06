@@ -512,21 +512,16 @@ function Limit-Text {
     return $builder.ToString()
 }
 
-# Ingest credentials: a GitHub Actions OIDC token when one is available
-# (dashboard ADR 0003), otherwise the shared x-ingest-token secret.
+# Ingest credential: the GitHub Actions OIDC token (dashboard ADR 0003) as a bearer token.
 function Get-IngestAuthHeader {
     [CmdletBinding()]
     [OutputType([hashtable])]
     param(
-        [AllowEmptyString()][AllowNull()][string]$OidcToken,
-        [AllowEmptyString()][AllowNull()][string]$SharedToken
+        [AllowEmptyString()][AllowNull()][string]$OidcToken
     )
 
     if (-not [string]::IsNullOrWhiteSpace($OidcToken)) {
         return @{ 'Authorization' = "Bearer $OidcToken" }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($SharedToken)) {
-        return @{ 'x-ingest-token' = $SharedToken }
     }
     return $null
 }

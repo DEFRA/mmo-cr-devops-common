@@ -424,21 +424,15 @@ Describe 'Limit-Text' {
 }
 
 Describe 'Get-IngestAuthHeader' {
-    It 'Prefers the OIDC token as a bearer token' {
-        $headers = Get-IngestAuthHeader -OidcToken 'jwt' -SharedToken 'secret'
+    It 'Sends the OIDC token as a bearer token' {
+        $headers = Get-IngestAuthHeader -OidcToken 'jwt'
 
         $headers['Authorization'] | Should -Be 'Bearer jwt'
         $headers.ContainsKey('x-ingest-token') | Should -BeFalse
     }
 
-    It 'Falls back to the shared token' {
-        $headers = Get-IngestAuthHeader -OidcToken '' -SharedToken 'secret'
-
-        $headers['x-ingest-token'] | Should -Be 'secret'
-        $headers.ContainsKey('Authorization') | Should -BeFalse
-    }
-
-    It 'Returns nothing when neither credential is available' {
-        Get-IngestAuthHeader -OidcToken $null -SharedToken ' ' | Should -BeNullOrEmpty
+    It 'Returns nothing when there is no OIDC token' {
+        Get-IngestAuthHeader -OidcToken ' ' | Should -BeNullOrEmpty
+        Get-IngestAuthHeader -OidcToken $null | Should -BeNullOrEmpty
     }
 }

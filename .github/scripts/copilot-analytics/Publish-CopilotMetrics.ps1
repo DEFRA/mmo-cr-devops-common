@@ -4,8 +4,8 @@
     ingest endpoint.
 
 .DESCRIPTION
-    POSTs the metrics JSON to <IngestUrl> authenticated with a shared secret in
-    the x-ingest-token header, alongside labelling headers that identify the
+    POSTs the metrics JSON to <IngestUrl> authenticated with a GitHub Actions
+    OIDC token, alongside labelling headers that identify the
     producer, the triggering event and the logical identity of the payload.
 
     Retries are safe because the consumer upserts a single document per
@@ -38,10 +38,10 @@
     Total number of send attempts before giving up.
 
 .NOTES
-    Credentials: when the job has `id-token: write` and INGEST_OIDC_AUDIENCE is
-    set, a fresh GitHub Actions OIDC token is requested for every attempt and
-    sent as `Authorization: Bearer`. Otherwise the shared secret in
-    INGEST_TOKEN is sent in x-ingest-token. Neither is ever logged.
+    Credentials: the job needs `id-token: write` and INGEST_OIDC_AUDIENCE. A
+    fresh GitHub Actions OIDC token is requested for every attempt and sent as
+    `Authorization: Bearer`. There is no shared-secret fallback; the token is
+    never logged.
 #>
 [CmdletBinding()]
 param(
@@ -93,12 +93,11 @@ if ([string]::IsNullOrWhiteSpace($IngestUrl)) {
     exit 0
 }
 
-$ingestToken = $env:INGEST_TOKEN
 $oidcAvailable = -not [string]::IsNullOrWhiteSpace($env:INGEST_OIDC_TOKEN) -or (
     -not [string]::IsNullOrWhiteSpace($env:ACTIONS_ID_TOKEN_REQUEST_URL) -and
     -not [string]::IsNullOrWhiteSpace($env:INGEST_OIDC_AUDIENCE))
-if (-not $oidcAvailable -and [string]::IsNullOrWhiteSpace($ingestToken)) {
-    Write-Annotation -Level error -Message 'No ingest credential: grant id-token: write for OIDC, or set INGEST_TOKEN. Refusing to send analytics unauthenticated.'
+if (-not $oidcAvailable) {
+    Write-Annotation -Level error -Message 'No ingest credential: grant id-token: write on the calling job. Refusing to send analytics unauthenticated.'
     throw 'Missing ingest credential.'
 }
 
@@ -159,7 +158,7 @@ while ($true) {
 
     try {
         $requestHeaders = $headers.Clone()
-        $authHeader = Get-IngestAuthHeader -OidcToken (Get-OidcToken) -SharedToken $ingestToken
+        $authHeader = Get-IngestAuthHeader -OidcToken (Get-OidcToken)
         foreach ($name in $authHeader.Keys) { $requestHeaders[$name] = $authHeader[$name] }
 
         $response = Invoke-WebRequest -Uri $IngestUrl -Method Post `

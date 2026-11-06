@@ -106,7 +106,7 @@ function Send-Record {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $failure = $null
         try {
-            $authHeader = Get-IngestAuthHeader -OidcToken (Get-OidcToken) -SharedToken $null
+            $authHeader = Get-IngestAuthHeader -OidcToken (Get-OidcToken)
             $response = Invoke-WebRequest -Uri $IngestUrl -Method Post -Headers $authHeader `
                 -ContentType 'application/json' -Body $bytes -SkipHttpErrorCheck -TimeoutSec 30
             $status = [int]$response.StatusCode

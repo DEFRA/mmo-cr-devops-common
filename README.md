@@ -55,9 +55,6 @@ jobs:
     with:
       pr-number: ${{ inputs.pr_number || '' }}
       ingest-url: ${{ vars.COPILOT_ANALYTICS_INGEST_URL }}
-    # Only needed until the dashboard turns off shared-token ingest.
-    secrets:
-      ingest-token: ${{ secrets.COPILOT_INGEST_TOKEN }}
 ```
 
 #### Inputs
@@ -69,28 +66,28 @@ jobs:
 | `jira-project-keys` | string | No       | Comma-separated Jira project keys (for example `MMO,CR`). When set, only keys in these projects are emitted.                  |
 | `ingest-audience`   | string | No       | Audience of the OIDC token sent to the dashboard. Default `mmo-cr-copilot-dashboard`; must match the dashboard's `INGEST_OIDC_AUDIENCE`. |
 
-Authentication: when the calling job grants `id-token: write`, every publish attempt requests a
+Authentication: the calling job must grant `id-token: write`. Every publish attempt requests a
 fresh GitHub Actions OIDC token and sends it as `Authorization: Bearer`. The dashboard checks the
 DEFRA organisation, this workflow, the event and that the payload's repository is the caller's and
-is mapped to a project. Without `id-token: write`, the shared `ingest-token` is sent instead.
+is mapped to a project. There is no shared secret and nothing to store in the repository. Without
+`id-token: write` the run publishes nothing and says so in its job summary.
 
 #### Secrets
 
-| Name           | Required | Description                                                                                         |
-| -------------- | -------- | --------------------------------------------------------------------------------------------------- |
-| `ingest-token` | No       | Shared secret sent in the `x-ingest-token` header. Used only when no OIDC token can be issued. |
+| Name           | Required | Description                                                                          |
+| -------------- | -------- | ------------------------------------------------------------------------------------ |
+| `ingest-token` | No       | Deprecated and ignored. Still declared so existing callers do not fail; remove it.   |
 
 #### Configuration in the consuming repository
 
-Both values are held by the consuming repository, because a reusable workflow resolves `vars` and
-`secrets` against the **caller**, never against the repository that hosts it:
+The ingest URL is held by the consuming repository, because a reusable workflow resolves `vars`
+against the **caller**, never against the repository that hosts it:
 
-| Setting                        | Kind     | Purpose                             |
-| ------------------------------ | -------- | ----------------------------------- |
-| `COPILOT_ANALYTICS_INGEST_URL` | Variable | Ingest endpoint for the dashboard   |
-| `COPILOT_INGEST_TOKEN`         | Secret   | Authenticates the ingest request    |
+| Setting                        | Kind     | Purpose                           |
+| ------------------------------ | -------- | --------------------------------- |
+| `COPILOT_ANALYTICS_INGEST_URL` | Variable | Ingest endpoint for the dashboard |
 
-Moving these to DEFRA organisation-level settings (with repository access limited to the MMO CR
+Moving this to a DEFRA organisation-level variable (with repository access limited to the MMO CR
 repositories) would remove the per-repository setup and needs no change to any workflow file.
 
 #### Behaviour worth knowing
@@ -103,8 +100,10 @@ repositories) would remove the per-repository setup and needs no change to any w
   counting. Entries are gitignore-style and are **added to**, not a replacement for, the built-in
   exclusions for lockfiles, minified bundles, source maps and snapshots.
 - `.analytics/**` (written by the DEFRA AI Attribution extension) is always excluded from line
-  counts. Only summaries a commit **adds** count for that commit; an invalid summary is ignored and
-  the commit falls back to the trailer, then to human-authored.
+  counts. Only summaries a commit **adds** count for that commit. A valid summary is authoritative:
+  the `Copilot-Assisted: true` trailer is ignored on that commit, so a summary with no AI lines
+  makes it human-authored. Without a valid summary (none, or invalid) the commit falls back to the
+  trailer, then to human-authored.
 - Format v2 metadata is **verified**: every AI line a commit's file records list is checked against
   the committed code by recomputing its fingerprint (`Get-LineFingerprint`, the same hash as the
   extension). A line that no longer matches is subtracted from the AI totals, so it falls back to

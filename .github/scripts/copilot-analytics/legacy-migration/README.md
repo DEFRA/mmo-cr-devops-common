@@ -25,8 +25,9 @@ numbers and outcomes only.
 - A GitHub token with read access to pull requests and contents for the repositories. The title
   and changed files of each pull request are read from GitHub because the legacy documents do not
   hold them, and the v2 contract requires them. Without a token GitHub allows 60 requests an hour.
-- The ingest token for the target environment, from the platform owner. `INGEST_ALLOW_SHARED_TOKEN`
-  must still be `true` there.
+- The ingest token for the target environment, from the platform owner. This one-off tool runs
+  outside GitHub Actions, so it cannot use OIDC: set `INGEST_ALLOW_SHARED_TOKEN=true` on the target
+  dashboard for the migration only (it defaults to `false`), then switch it off again.
 - Each repository mapped to a project in the target; unmapped repositories are stored unassigned.
 
 ## Set Secrets
