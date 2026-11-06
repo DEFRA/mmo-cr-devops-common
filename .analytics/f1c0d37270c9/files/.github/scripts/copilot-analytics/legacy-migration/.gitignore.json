@@ -1,0 +1,26 @@
+{
+  "schema": "ai-attribution-file/2",
+  "path": ".github/scripts/copilot-analytics/legacy-migration/.gitignore",
+  "added": 7,
+  "counts": {
+    "aiCompletion": 0,
+    "aiChat": 0,
+    "aiAgent": 7,
+    "aiModified": 0,
+    "pasted": 0,
+    "typed": 0,
+    "untracked": 0
+  },
+  "ranges": {
+    "ai-agent": "1-7"
+  },
+  "ai": [
+    [1, "a", "9c462356", 0],
+    [2, "a", "a7c9e4c7", 0],
+    [3, "a", "187320da", 0],
+    [4, "a", "7f282b1e", 0],
+    [5, "a", "d4ca651f", 0],
+    [6, "a", "efab20c0", 0],
+    [7, "a", "62168ca8", 0]
+  ]
+}

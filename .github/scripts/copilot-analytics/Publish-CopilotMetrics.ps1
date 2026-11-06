@@ -4,8 +4,8 @@
     ingest endpoint.
 
 .DESCRIPTION
-    POSTs the metrics JSON to <IngestUrl> authenticated with a shared secret in
-    the x-ingest-token header, alongside labelling headers that identify the
+    POSTs the metrics JSON to <IngestUrl> authenticated with a GitHub Actions
+    OIDC token, alongside labelling headers that identify the
     producer, the triggering event and the logical identity of the payload.
 
     Retries are safe because the consumer upserts a single document per
@@ -38,9 +38,10 @@
     Total number of send attempts before giving up.
 
 .NOTES
-    The ingest token is read from the INGEST_TOKEN environment variable and is
-    only ever placed in a request header, never in a command line argument or
-    log line.
+    Credentials: the job needs `id-token: write` and INGEST_OIDC_AUDIENCE. A
+    fresh GitHub Actions OIDC token is requested for every attempt and sent as
+    `Authorization: Bearer`. There is no shared-secret fallback; the token is
+    never logged.
 #>
 [CmdletBinding()]
 param(
@@ -75,6 +76,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+. (Join-Path $PSScriptRoot 'CopilotMetrics.Helpers.ps1')
+
 function Write-Annotation {
     param([ValidateSet('notice', 'warning', 'error')][string]$Level, [string]$Message)
     if ($env:GITHUB_ACTIONS -eq 'true') {
@@ -90,11 +93,16 @@ if ([string]::IsNullOrWhiteSpace($IngestUrl)) {
     exit 0
 }
 
-$ingestToken = $env:INGEST_TOKEN
-if ([string]::IsNullOrWhiteSpace($ingestToken)) {
-    Write-Annotation -Level error -Message 'INGEST_TOKEN is not set. Refusing to send analytics unauthenticated.'
-    throw 'Missing ingest token.'
+$oidcAvailable = -not [string]::IsNullOrWhiteSpace($env:INGEST_OIDC_TOKEN) -or (
+    -not [string]::IsNullOrWhiteSpace($env:ACTIONS_ID_TOKEN_REQUEST_URL) -and
+    -not [string]::IsNullOrWhiteSpace($env:INGEST_OIDC_AUDIENCE))
+if (-not $oidcAvailable) {
+    Write-Annotation -Level error -Message 'No ingest credential: grant id-token: write on the calling job. Refusing to send analytics unauthenticated.'
+    throw 'Missing ingest credential.'
 }
+
+# A token id can be used once at the dashboard, so every attempt asks for a new one.
+# (Get-OidcToken lives in CopilotMetrics.Helpers.ps1 and is shared with Publish-AiSurvival.ps1.)
 
 if (-not (Test-Path -Path $MetricsPath -PathType Leaf)) {
     Write-Annotation -Level error -Message "Metrics file '$MetricsPath' does not exist. Did the collection step run?"
@@ -129,7 +137,6 @@ else {
 }
 
 $headers = @{
-    'x-ingest-token'        = $ingestToken
     'x-analytics-label'     = 'copilot-analytics'
     'x-analytics-source'    = 'github-actions'
     'x-analytics-event'     = $EventName
@@ -150,8 +157,12 @@ while ($true) {
     $attempt++
 
     try {
+        $requestHeaders = $headers.Clone()
+        $authHeader = Get-IngestAuthHeader -OidcToken (Get-OidcToken)
+        foreach ($name in $authHeader.Keys) { $requestHeaders[$name] = $authHeader[$name] }
+
         $response = Invoke-WebRequest -Uri $IngestUrl -Method Post `
-            -Headers $headers `
+            -Headers $requestHeaders `
             -ContentType 'application/json' `
             -Body ([System.Text.Encoding]::UTF8.GetBytes($metricsJson)) `
             -SkipHttpErrorCheck `
@@ -167,7 +178,8 @@ while ($true) {
         # 4xx will not resolve by retrying: the payload or token is wrong.
         if ($status -lt 500) {
             $detail = switch ($status) {
-                401 { 'the ingest token was rejected.' }
+                401 { 'the ingest credential was rejected.' }
+                403 { 'the repository does not match the token or is not mapped to a project.' }
                 413 { 'the endpoint considers the payload too large.' }
                 400 { 'the payload failed validation at the consumer.' }
                 default { 'the request was rejected.' }
